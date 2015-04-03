@@ -44,13 +44,13 @@ trait CreateQueueDirectives { this: ElasticMQDirectives with QueueURLModule with
               verifyMessageWaitTime(secondsReceiveMessageWaitTimeOpt)
 
               val queueData = lookupOrCreateQueue(newQueueData).apply()
-
-              if ((queueData.delay.getStandardSeconds != secondsDelay) ||
-                (queueData.receiveMessageWait.getStandardSeconds != secondsReceiveMessageWaitTime) ||
-                (queueData.defaultVisibilityTimeout.seconds != secondsVisibilityTimeout)) {
-                // Special case: the queue existed, but has different attributes
-                throw new SQSException("AWS.SimpleQueueService.QueueNameExists")
-              }
+//                TODO: modify queue if parameters don't match
+//                if ((queueData.delay.getStandardSeconds != secondsDelay) ||
+//                  (queueData.receiveMessageWait.getStandardSeconds != secondsReceiveMessageWaitTime) ||
+//                  (queueData.defaultVisibilityTimeout.seconds != secondsVisibilityTimeout)) {
+//                  // Special case: the queue existed, but has different attributes
+//                  throw new SQSException("AWS.SimpleQueueService.QueueNameExists")
+//                }
 
               respondWith {
                 <CreateQueueResponse>

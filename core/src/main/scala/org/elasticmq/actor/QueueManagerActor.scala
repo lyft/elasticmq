@@ -28,6 +28,7 @@ class QueueManagerActor(nowProvider: NowProvider) extends ReplyingActor with Log
 //        Left(new QueueAlreadyExists(queueData.name))
 
         //TODO flag for unsafe mode
+        logger.info(s"Creating queue $queueData")
         Right(queues.get(queueData.name).getOrElse(context.actorOf(Props(new QueueActor(nowProvider, queueData)))))
       } else {
         logger.info(s"Creating queue $queueData")
