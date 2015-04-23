@@ -49,7 +49,14 @@ class QueueManagerActor(nowProvider: NowProvider) extends ReplyingActor with Log
 
       // TODO flag for unsafe mode
       if (!result.isDefined) {
-        val queueData = QueueData(queueName, MillisVisibilityTimeout.fromSeconds(DefaultVisibilityTimeout), Duration.ZERO, Duration.ZERO, DateTime.now(), DateTime.now())
+        val queueData = QueueData(
+          queueName,
+          MillisVisibilityTimeout.fromSeconds(DefaultVisibilityTimeout),
+          Duration.standardSeconds(DefaultDelay),
+          Duration.standardSeconds(DefaultReceiveMessageWaitTimeSecondsAttribute),
+          DateTime.now(),
+          DateTime.now()
+        )
         val actor = context.actorOf(Props(new QueueActor(nowProvider, queueData)))
         queues(queueData.name) = actor
         result = queues.get(queueData.name)
