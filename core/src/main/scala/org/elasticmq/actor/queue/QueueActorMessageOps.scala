@@ -1,23 +1,12 @@
 package org.elasticmq.actor.queue
 
-import scala.annotation.tailrec
-import org.elasticmq._
-import org.elasticmq.msg._
-import org.joda.time.DateTime
-import org.elasticmq.util.Logging
-import org.elasticmq.util.NowProvider
-import org.elasticmq.OnDateTimeReceived
-import scala.Some
-import org.elasticmq.NewMessageData
-import org.elasticmq.msg.DeleteMessage
-import org.elasticmq.MessageId
-import org.elasticmq.msg.SendMessage
-import org.elasticmq.MessageData
-import org.elasticmq.MillisNextDelivery
-import org.elasticmq.msg.ReceiveMessages
-import org.elasticmq.msg.UpdateVisibilityTimeout
-import org.elasticmq.msg.LookupMessage
 import org.elasticmq.actor.reply._
+import org.elasticmq.msg.{DeleteMessage, LookupMessage, ReceiveMessages, SendMessage, UpdateVisibilityTimeout, _}
+import org.elasticmq.util.{Logging, NowProvider}
+import org.elasticmq.{MessageData, MessageId, MillisNextDelivery, NewMessageData, OnDateTimeReceived, _}
+import org.joda.time.DateTime
+
+import scala.annotation.tailrec
 
 trait QueueActorMessageOps extends Logging {
   this: QueueActorStorage =>
@@ -74,7 +63,7 @@ trait QueueActorMessageOps extends Logging {
   }
 
   protected def receiveMessages(visibilityTimeout: VisibilityTimeout,
-                                count: Int): List[MessageData] = {
+    count: Int): List[MessageData] = {
     val deliveryTime = nowProvider.nowMillis
 
     @tailrec
@@ -94,32 +83,45 @@ trait QueueActorMessageOps extends Logging {
 
   @tailrec
   private def receiveMessage(deliveryTime: Long, newNextDelivery: MillisNextDelivery): Option[MessageData] = {
-    if (messageQueue.size == 0) {
+    if (messageQueue.isEmpty) {
       None
     } else {
       val internalMessage = messageQueue.dequeue()
       val id = MessageId(internalMessage.id)
-      if (internalMessage.nextDelivery > deliveryTime) {
+      if (!internalMessage.deliverable(deliveryTime)) {
         // Putting the msg back. That's the youngest msg, so there is no msg that can be received.
         messageQueue += internalMessage
         None
       } else if (messagesById.contains(id.id)) {
-        // Putting the msg again into the queue, with a new next delivery
-        internalMessage.deliveryReceipt = Some(DeliveryReceipt.generate(id).receipt)
-        internalMessage.nextDelivery = newNextDelivery.millis
-
-        internalMessage.receiveCount += 1
-        internalMessage.firstReceive = OnDateTimeReceived(new DateTime(deliveryTime))
-
-        messageQueue += internalMessage
-
-        logger.debug(s"${queueData.name}: Receiving message $id")
-
-        Some(internalMessage.toMessageData)
+        processInternalMessage(deliveryTime, newNextDelivery, internalMessage)
       } else {
         // Deleted msg - trying again
         receiveMessage(deliveryTime, newNextDelivery)
       }
+    }
+  }
+
+  private def processInternalMessage(
+    deliveryTime: Long, newNextDelivery: MillisNextDelivery, internalMessage: InternalMessage) = {
+    // Putting the msg to dead letters queue if exists
+    if (queueData.deadLettersQueue.map(_.maxReceiveCount).exists(_ <= internalMessage.receiveCount)) {
+      logger.debug(s"${queueData.name}: send message $internalMessage to dead letters actor $deadLettersActorRef")
+      deadLettersActorRef.foreach(_ ! SendMessage(internalMessage.toNewMessageData))
+      internalMessage.deliveryReceipt.foreach(dr => deleteMessage(DeliveryReceipt(dr)))
+      None
+    } else {
+      // Putting the msg again into the queue, with a new next delivery
+      internalMessage.deliveryReceipt = Some(DeliveryReceipt.generate(MessageId(internalMessage.id)).receipt)
+      internalMessage.nextDelivery = newNextDelivery.millis
+
+      internalMessage.receiveCount += 1
+      internalMessage.firstReceive = OnDateTimeReceived(new DateTime(deliveryTime))
+
+      messageQueue += internalMessage
+
+      logger.debug(s"${queueData.name}: Receiving message ${internalMessage.id}")
+
+      Some(internalMessage.toMessageData)
     }
   }
 
@@ -136,7 +138,7 @@ trait QueueActorMessageOps extends Logging {
     val msgId = deliveryReceipt.extractId.toString
 
     messagesById.get(msgId).foreach { msgData =>
-      if (msgData.deliveryReceipt == Some(deliveryReceipt.receipt)) {
+      if (msgData.deliveryReceipt.contains(deliveryReceipt.receipt)) {
         // Just removing the msg from the map. The msg will be removed from the queue when trying to receive it.
         messagesById.remove(msgId)
       }

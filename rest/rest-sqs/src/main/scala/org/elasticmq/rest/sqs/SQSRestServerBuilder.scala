@@ -1,30 +1,30 @@
 package org.elasticmq.rest.sqs
 
-import xml._
-import java.security.MessageDigest
-import org.elasticmq.util.Logging
-import collection.mutable.ArrayBuffer
-import spray.routing.SimpleRoutingApp
-import akka.actor.{Props, ActorRef, ActorSystem}
-import spray.can.server.ServerSettings
-import akka.util.Timeout
-import scala.concurrent.{Await, Future}
-import org.elasticmq.rest.sqs.directives.ElasticMQDirectives
-import spray.can.Http
-import akka.io.IO
-import org.elasticmq.rest.sqs.Constants._
-import scala.xml.EntityRef
-import org.elasticmq.QueueData
-import org.elasticmq.NodeAddress
-import com.typesafe.config.ConfigFactory
-import org.elasticmq.actor.QueueManagerActor
-import org.elasticmq.util.NowProvider
-import scala.concurrent.duration._
-import spray.http.MediaTypes
-import java.nio.ByteBuffer
 import java.io.ByteArrayOutputStream
-import scala.collection.immutable.TreeMap
+import java.nio.ByteBuffer
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
+
+import akka.actor.{ActorRef, ActorSystem, Props}
+import akka.http.scaladsl.Http
+import akka.http.scaladsl.server.{Directive1, Directives}
+import akka.stream.ActorMaterializer
+import akka.util.Timeout
+import com.typesafe.config.ConfigFactory
+import org.elasticmq._
+import org.elasticmq.actor.QueueManagerActor
+import org.elasticmq.rest.sqs.Constants._
+import org.elasticmq.rest.sqs.directives.ElasticMQDirectives
+import org.elasticmq.util.{Logging, NowProvider}
+
+import scala.collection.immutable.TreeMap
+import scala.collection.mutable.ArrayBuffer
+import scala.concurrent.duration._
+import scala.concurrent.{Await, Future}
+import scala.util.control.Exception._
+import scala.util.control.NonFatal
+import scala.xml.{EntityRef, _}
 
 /**
  * By default:
@@ -34,13 +34,14 @@ import java.util.concurrent.TimeUnit
  *  <ul>for `sqsLimits`: relaxed
  * </li>
  */
-object SQSRestServerBuilder extends TheSQSRestServerBuilder(None, None, "", 9324, NodeAddress(), SQSLimits.Strict)
+object SQSRestServerBuilder extends TheSQSRestServerBuilder(None, None, "", 9324, NodeAddress(), true, SQSLimits.Strict)
 
 case class TheSQSRestServerBuilder(providedActorSystem: Option[ActorSystem],
                                    providedQueueManagerActor: Option[ActorRef],
                                    interface: String,
                                    port: Int,
                                    serverAddress: NodeAddress,
+                                   generateServerAddress: Boolean,
                                    sqsLimits: SQSLimits.Value) extends Logging {
 
   /**
@@ -67,10 +68,15 @@ case class TheSQSRestServerBuilder(providedActorSystem: Option[ActorSystem],
   def withPort(_port: Int) = this.copy(port = _port)
 
   /**
+   * Will assign port automatically (uses port 0). The port to which the socket binds will be logged on successful startup.
+   */
+  def withDynamicPort() = withPort(0)
+
+  /**
    * @param _serverAddress Address which will be returned as the queue address. Requests to this address
    *                       should be routed to this server.
    */
-  def withServerAddress(_serverAddress: NodeAddress) = this.copy(serverAddress = _serverAddress)
+  def withServerAddress(_serverAddress: NodeAddress) = this.copy(serverAddress = _serverAddress, generateServerAddress = false)
 
   /**
    * @param _sqsLimits Should "real" SQS limits be used (strict), or should they be relaxed where possible (regarding
@@ -79,12 +85,15 @@ case class TheSQSRestServerBuilder(providedActorSystem: Option[ActorSystem],
   def withSQSLimits(_sqsLimits: SQSLimits.Value) = this.copy(sqsLimits = _sqsLimits)
 
   def start(): SQSRestServer = {
-    val (theActorSystem, stopActorSystem) = getOrCreateActorSystem()
+    val (theActorSystem, stopActorSystem) = getOrCreateActorSystem
     val theQueueManagerActor = getOrCreateQueueManagerActor(theActorSystem)
-    val theServerAddress = serverAddress
+    val theServerAddress = if (generateServerAddress) NodeAddress(host = if (interface.isEmpty) "localhost" else interface, port = port) else serverAddress
     val theLimits = sqsLimits
 
-    implicit val implictActorSystem = theActorSystem
+    implicit val implicitActorSystem = theActorSystem
+    implicit val implicitMaterializer = ActorMaterializer()
+
+    val currentServerAddress = new AtomicReference[NodeAddress](theServerAddress)
 
     val env = new QueueManagerActorModule
       with QueueURLModule
@@ -104,69 +113,81 @@ case class TheSQSRestServerBuilder(providedActorSystem: Option[ActorSystem],
       with ChangeMessageVisibilityBatchDirectives
       with GetQueueUrlDirectives
       with PurgeQueueDirectives
+      with AddPermissionDirectives
       with AttributesModule {
 
+      def serverAddress = currentServerAddress.get()
       lazy val actorSystem = theActorSystem
+      lazy val materializer = implicitMaterializer
       lazy val queueManagerActor = theQueueManagerActor
-      lazy val serverAddress = theServerAddress
       lazy val sqsLimits = theLimits
-      lazy val timeout = Timeout(ServerSettings(actorSystem).requestTimeout.toMillis, TimeUnit.MILLISECONDS)
+      lazy val timeout = Timeout(21, TimeUnit.SECONDS) // see application.conf
     }
 
     import env._
-    val rawRoutes =
+    def rawRoutes(p: AnyParams) =
         // 1. Sending, receiving, deleting messages
-        sendMessage ~
-        sendMessageBatch ~
-        receiveMessage ~
-        deleteMessage ~
-        deleteMessageBatch ~
+        sendMessage(p) ~
+        sendMessageBatch(p) ~
+        receiveMessage(p) ~
+        deleteMessage(p) ~
+        deleteMessageBatch(p) ~
         // 2. Getting, creating queues
-        getQueueUrl ~
-        createQueue ~
-        listQueues ~
-        purgeQueue ~
+        getQueueUrl(p) ~
+        createQueue(p) ~
+        listQueues(p) ~
+        purgeQueue(p) ~
         // 3. Other
-        changeMessageVisibility ~
-        changeMessageVisibilityBatch ~
-        deleteQueue ~
-        getQueueAttributes ~
-        setQueueAttributes
+        changeMessageVisibility(p) ~
+        changeMessageVisibilityBatch(p) ~
+        deleteQueue(p) ~
+        getQueueAttributes(p) ~
+        setQueueAttributes(p) ~
+        addPermission(p)
 
     val config = new ElasticMQConfig
 
-    val routes = if (config.debug) {
-      logRequestResponse("") {
-        rawRoutes
-      }
-    } else rawRoutes
-
-    val serviceActorName = s"elasticmq-rest-sqs-$port"
-
-    val app = new SimpleRoutingApp {}
     implicit val bindingTimeout = Timeout(10, TimeUnit.SECONDS)
-    val appStartFuture = app.startServer(interface, port, serviceActorName) {
-      respondWithMediaType(MediaTypes.`text/xml`) {
-        handleServerExceptions {
-          handleRejectionsWithSQSError {
-            routes
+
+    val routes =
+      handleServerExceptions {
+        handleRejectionsWithSQSError {
+          anyParamsMap { p =>
+            if (config.debug) {
+              logRequestResult("") {
+                rawRoutes(p)
+              }
+            } else rawRoutes(p)
           }
         }
       }
+
+    val appStartFuture = Http().bindAndHandle(routes, interface, port)
+
+    appStartFuture.onSuccess {
+      case sb: Http.ServerBinding =>
+        if (generateServerAddress && port != sb.localAddress.getPort) {
+          currentServerAddress.set(theServerAddress.copy(port = sb.localAddress.getPort))
+        }
+
+        TheSQSRestServerBuilder.this.logger.info("Started SQS rest server, bind address %s:%d, visible server address %s"
+                .format(interface, sb.localAddress.getPort, if (env.serverAddress.isWildcard) "* (depends on incoming request path) " else env.serverAddress.fullAddress))
     }
 
-    TheSQSRestServerBuilder.this.logger.info("Started SQS rest server, bind address %s:%d, visible server address %s"
-      .format(interface, port, theServerAddress.fullAddress))
+    appStartFuture.onFailure {
+      case NonFatal(e) =>
+        TheSQSRestServerBuilder.this.logger.error("Cannot start SQS rest server, bind address %s:%d".format(interface, port), e)
+    }
 
     SQSRestServer(appStartFuture, () => {
-      import akka.pattern.ask
-      val future = IO(Http).ask(Http.CloseAll)(Timeout(10, TimeUnit.SECONDS))
-      future.map(v => { stopActorSystem(); v })
-      future
+      appStartFuture.flatMap { sb =>
+        stopActorSystem()
+        sb.unbind()
+      }
     })
   }
 
-  private def getOrCreateActorSystem() = {
+  private def getOrCreateActorSystem = {
     providedActorSystem
       .map((_, () => ()))
       .getOrElse {
@@ -183,7 +204,7 @@ case class TheSQSRestServerBuilder(providedActorSystem: Option[ActorSystem],
   }
 }
 
-case class SQSRestServer(startFuture: Future[Any], stopAndGetFuture: () => Future[Any]) {
+case class SQSRestServer(startFuture: Future[Http.ServerBinding], stopAndGetFuture: () => Future[Any]) {
   def waitUntilStarted() = {
     Await.result(startFuture, 1.minute)
   }
@@ -199,6 +220,7 @@ object Constants {
   val SqsDefaultVersion = "2012-11-05"
   val ReceiptHandleParameter = "ReceiptHandle"
   val VisibilityTimeoutParameter = "VisibilityTimeout"
+  val RedrivePolicyParameter = "RedrivePolicy"
   val DelaySecondsAttribute = "DelaySeconds"
   val ReceiveMessageWaitTimeSecondsAttribute = "ReceiveMessageWaitTimeSeconds"
   val QueueArnAttribute = "QueueArn"
@@ -224,25 +246,45 @@ object MD5Util {
   def md5Digest(s: String) = {
     val md5 = MessageDigest.getInstance("MD5")
     md5.reset()
-    md5.update(s.getBytes)
+    md5.update(s.getBytes("UTF-8"))
     md5.digest().map(0xFF & _).map { "%02x".format(_) }.foldLeft(""){_ + _}
   }
 
-  def md5AttributeDigest(attributes: Map[String, String]): String = {
+  def md5AttributeDigest(attributes: Map[String, MessageAttribute]): String = {
     def addEncodedString(b: ByteArrayOutputStream, s: String) = {
       val str = s.getBytes("UTF-8")
       b.write(ByteBuffer.allocate(4).putInt(s.length).array) // Sadly, we'll need ByteBuffer here to get a properly encoded 4-byte int (alternatively, we could encode by hand)
       b.write(str)
     }
 
+    def addEncodedByteArray(b: ByteArrayOutputStream, a: Array[Byte]) = {
+      b.write(ByteBuffer.allocate(4).putInt(a.length).array)
+      b.write(a)
+    }
+
     val byteStream = new ByteArrayOutputStream
 
-    TreeMap(attributes.toSeq:_*).foreach{ case (k,v) => { // TreeMap is for sorting, a requirement of algorithm
-        addEncodedString(byteStream, k)
-        addEncodedString(byteStream, "String") // Data Type
-        byteStream.write(1) // "String"
-        addEncodedString(byteStream, v)
+    TreeMap(attributes.toSeq: _*).foreach { case (k, v) => {
+      // TreeMap is for sorting, a requirement of algorithm
+      addEncodedString(byteStream, k)
+      addEncodedString(byteStream, v.getDataType())
+
+      v match {
+        case s: StringMessageAttribute => {
+          byteStream.write(1)
+          addEncodedString(byteStream, s.stringValue)
+        }
+        case n: NumberMessageAttribute => {
+          byteStream.write(1)
+          addEncodedString(byteStream, n.stringValue.toString)
+        }
+        case b: BinaryMessageAttribute => {
+          byteStream.write(2)
+          addEncodedByteArray(byteStream, b.binaryValue)
+        }
+        case _ => throw new IllegalArgumentException(s"Unsupported message attribute type: ${v.getClass.getName}")
       }
+    }
     }
 
     val md5 = MessageDigest.getInstance("MD5")
@@ -281,8 +323,33 @@ trait QueueManagerActorModule {
 trait QueueURLModule {
   def serverAddress: NodeAddress
 
-  def queueURL(queueData: QueueData) = List(serverAddress.fullAddress, QueueUrlContext, queueData.name).mkString("/")
-  def queueURL(queueName: String) = List(serverAddress.fullAddress, QueueUrlContext, queueName).mkString("/")
+  import Directives._
+
+  def baseQueueURL: Directive1[String] = {
+    val baseAddress = if (serverAddress.isWildcard) {
+      extractRequest.map { req =>
+        val incomingAddress = req.uri.copy(rawQueryString = None, fragment = None).toString
+
+        val incomingAddressNoSlash = if (incomingAddress.endsWith("/")) {
+          incomingAddress.substring(0, incomingAddress.length - 1)
+        } else incomingAddress
+
+        // removing the final /queue or /queue/ if present, it will be re-added later
+        if (incomingAddressNoSlash.endsWith(QueueUrlContext)) {
+          incomingAddressNoSlash.substring(0, incomingAddressNoSlash.length - QueueUrlContext.length - 1)
+        } else incomingAddressNoSlash
+      }
+    } else {
+      provide(serverAddress.fullAddress)
+    }
+
+    baseAddress.map(_ + "/" + QueueUrlContext)
+  }
+
+
+  def queueURL(queueData: QueueData): Directive1[String] = {
+    baseQueueURL.map(base => base + "/" + queueData.name)
+  }
 }
 
 object SQSLimits extends Enumeration {
@@ -291,10 +358,23 @@ object SQSLimits extends Enumeration {
 }
 
 trait SQSLimitsModule {
+
+  val NUMBER_ATTR_MAX_VALUE = BigDecimal.valueOf(10).pow(126)
+  val NUMBER_ATTR_MIN_VALUE = -BigDecimal.valueOf(10).pow(128)
+
   def sqsLimits: SQSLimits.Value
+
   def ifStrictLimits(condition: => Boolean)(exception: String) {
     if (sqsLimits == SQSLimits.Strict && condition) {
       throw new SQSException(exception)
+    }
+  }
+
+  def verifyMessageNumberAttribute(strValue: String) {
+    ifStrictLimits(allCatch.opt(BigDecimal(strValue))
+      .filter(v => v >= NUMBER_ATTR_MIN_VALUE)
+      .filter(v => v <= NUMBER_ATTR_MAX_VALUE).isEmpty) {
+      s"Number attribute value $strValue should be in range (-10**128..10**126)"
     }
   }
 
@@ -304,7 +384,7 @@ trait SQSLimitsModule {
         throw SQSException.invalidParameterValue
       }
 
-      ifStrictLimits(messageWaitTime > 20 || messageWaitTime < 1) {
+      ifStrictLimits(messageWaitTime > 20 || messageWaitTime < 0) {
         InvalidParameterValueErrorName
       }
     }

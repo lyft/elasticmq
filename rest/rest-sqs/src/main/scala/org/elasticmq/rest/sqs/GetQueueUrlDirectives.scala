@@ -4,19 +4,21 @@ import Constants._
 import org.elasticmq.rest.sqs.directives.ElasticMQDirectives
 
 trait GetQueueUrlDirectives { this: ElasticMQDirectives with QueueURLModule =>
-  val getQueueUrl = {
-    action("GetQueueUrl") {
+  def getQueueUrl(p: AnyParams) = {
+    p.action("GetQueueUrl") {
       rootPath {
-        queueDataFromParams { queueData =>
-          respondWith {
-            <GetQueueUrlResponse>
-              <GetQueueUrlResult>
-                <QueueUrl>{queueURL(queueData)}</QueueUrl>
-              </GetQueueUrlResult>
-              <ResponseMetadata>
-                <RequestId>{EmptyRequestId}</RequestId>
-              </ResponseMetadata>
-            </GetQueueUrlResponse>
+        queueDataFromParams(p) { queueData =>
+          queueURL(queueData) { url =>
+            respondWith {
+              <GetQueueUrlResponse>
+                <GetQueueUrlResult>
+                  <QueueUrl>{url}</QueueUrl>
+                </GetQueueUrlResult>
+                <ResponseMetadata>
+                  <RequestId>{EmptyRequestId}</RequestId>
+                </ResponseMetadata>
+              </GetQueueUrlResponse>
+            }
           }
         }
       }

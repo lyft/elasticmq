@@ -5,9 +5,12 @@ tl;dr
 -----
 
 * message queue system
-* runs stand-alone ([download](https://s3-eu-west-1.amazonaws.com/softwaremill-public/elasticmq-server-0.8.7.jar)) or embedded
+* runs stand-alone ([download](https://s3-eu-west-1.amazonaws.com/softwaremill-public/elasticmq-server-0.13.2.jar)) or embedded
 * [Amazon SQS](http://aws.amazon.com/sqs/)-compatible interface
 * fully asynchronous implementation, no blocking calls
+
+Created and maintained by 
+[<img src="https://softwaremill.com/img/logo2x.png" alt="SoftwareMill logo" height="25">](https://softwaremill.com)
 
 Summary
 -------
@@ -40,25 +43,26 @@ Installation: stand-alone
 -------------------------
 
 You can download the stand-alone distribution here:
-[https://s3/.../elasticmq-server-0.8.7.jar](https://s3-eu-west-1.amazonaws.com/softwaremill-public/elasticmq-server-0.8.7.jar)
+[https://s3/.../elasticmq-server-0.13.2.jar](https://s3-eu-west-1.amazonaws.com/softwaremill-public/elasticmq-server-0.13.2.jar)
 
 Java 6 or above is required for running the server.
 
 Simply run the jar and you should get a working server, which binds to `localhost:9324`:
 
-    java -jar elasticmq-server-0.8.7.jar
+    java -jar elasticmq-server-0.13.2.jar
 
 ElasticMQ uses [Typesafe Config](https://github.com/typesafehub/config) for configuration. To specify custom
 configuration values, create a file (e.g. `custom.conf`), fill it in with the desired values, and pass it to the server:
 
-    java -Dconfig.file=custom.conf -jar elasticmq-server-0.8.7.jar
+    java -Dconfig.file=custom.conf -jar elasticmq-server-0.13.2.jar
 
-The config file may contain any configuration for Akka, Spray and ElasticMQ. Current ElasticMQ configuration values are:
+The config file may contain any configuration for Akka and ElasticMQ. Current ElasticMQ configuration values are:
 
 ````
 include classpath("application.conf")
 
-// What is the outside visible address of this ElasticMQ node (used by rest-sqs)
+// What is the outside visible address of this ElasticMQ node 
+// Used to create the queue URL (may be different from bind address!)
 node-address {
     protocol = http
     host = localhost
@@ -71,19 +75,62 @@ rest-sqs {
     bind-port = 9324
     bind-hostname = "0.0.0.0"
     // Possible values: relaxed, strict
-    sqs-limits = relaxed
+    sqs-limits = strict
+}
+
+// Should the node-address be generated from the bind port/hostname
+// Set this to true e.g. when assigning port automatically by using port 0.
+generate-node-address = false
+
+queues {
+    // See next section
 }
 ````
-
-By default the maximum SQS message wait time is 20 seconds, and the maximum duration of a request is set to 21 seconds.
-To change that (e.g. if you want longer message wait times), adjust the `spray.can.server.request-timeout` configuration
-property.
 
 You can also provide an alternative [Logback](http://logback.qos.ch/) configuration file (the
 [default](server/src/main/resources/logback.xml) is configured to
 log INFO logs and above to the console):
 
-    java -Dlogback.configurationFile=my_logback.xml -jar elasticmq-server-0.8.7.jar
+    java -Dlogback.configurationFile=my_logback.xml -jar elasticmq-server-0.13.2.jar
+
+How are queue URLs created
+--------------------------
+
+Some of the responses include a queue URL. By default the urls will use `http://localhost:9324` as the base URL.
+To customize, you should properly set the protocol/host/port/context in the `node-address` setting (see above).
+
+You can also set `node-address.host` to a special value, `"*"`, which will cause any queue URLs created during a request
+to use the path of the incoming request. This might be useful e.g. in containerized (Docker) deployments.
+
+Note that changing the `bind-port` and `bind-hostname` settings does not affect the queue URLs in any way unless
+`generate-node-address` is `true`. In that case, the bind host/port are used to create the node address. This is
+useful when the port should be automatically assigned (use port `0` in such case, the selected port will be
+visible in the logs).
+Automatically creating queues on startup
+----------------------------------------
+
+Queues can be automatically created on startup by providing appropriate configuration:
+
+The queues are specified in a custom configuration file. For example, create a `custom.conf` file with the following:
+
+````
+include classpath("application.conf")
+
+queues {
+    queue1 {
+        defaultVisibilityTimeout = 10 seconds
+        delay = 5 seconds
+        receiveMessageWait = 0 seconds
+        deadLettersQueue {
+            name = "myDLQ"
+            maxReceiveCount = 3 // from 1 to 1000
+    	}
+    }
+    queue2 { }
+}
+````
+
+All attributes are optional (except `name` and `maxReceiveCount` when a `deadLettersQueue` is defined).
 
 Starting an embedded ElasticMQ server with an SQS interface
 -----------------------------------------------------------
@@ -109,18 +156,43 @@ To use [Amazon Java SDK](http://aws.amazon.com/sdkforjava/) as an interface to a
 to change the endpoint:
 
     client = new AmazonSQSClient(new BasicAWSCredentials("x", "x"))
-    client.setEndpoint("http://localhost:9324", "sqs", "")
+    client.setEndpoint("http://localhost:9324")
 
 The endpoint value should be the same address as the `NodeAddress` provided as an argument to
 `SQSRestServerBuilder` or in the configuration file.
 
 The `rest-sqs-testing-amazon-java-sdk` module contains some more usage examples.
 
+Using the Amazon boto (Python) to access an ElasticMQ Server
+-------------------------------------------------------
+
+To use [Amazon boto](http://docs.pythonboto.org/en/latest/) as an interface to an ElasticMQ server you set up the connection using:
+
+    region = boto.sqs.regioninfo.RegionInfo(name='elasticmq',
+                                            endpoint=sqs_endpoint)
+    conn = boto.connect_sqs(aws_access_key_id='x',
+                            aws_secret_access_key='x',
+                            is_secure=False,
+                            port=sqs_port,
+                            region=region)
+
+where `sqs_endpoint` and `sqs_port` are the host and port.
+
+The `boto3` interface is different:
+
+    client = boto3.resource('sqs',
+                            endpoint_url='http://localhost:9324',
+                            region_name='elasticmq',
+                            aws_secret_access_key='x',
+                            aws_access_key_id='x',
+                            use_ssl=False)
+    queue = client.get_queue_by_name(QueueName='queue1')
+
 ElasticMQ dependencies in SBT
 -----------------------------
 
     // Scala 2.11
-    val elasticmqSqs        = "org.elasticmq" %% "elasticmq-rest-sqs"         % "0.8.7"
+    val elasticmqSqs        = "org.elasticmq" %% "elasticmq-rest-sqs"         % "0.13.2"
 
     // Scala 2.10
     val elasticmqSqs        = "org.elasticmq" %% "elasticmq-rest-sqs"         % "0.7.1"
@@ -128,7 +200,7 @@ ElasticMQ dependencies in SBT
 If you don't want the SQS interface, but just use the actors directly, you can add a dependency only to the `core`
 module:
 
-    val elasticmqCore       = "org.elasticmq" %% "elasticmq-core"             % "0.8.7"
+    val elasticmqCore       = "org.elasticmq" %% "elasticmq-core"             % "0.13.2"
 
 If you want to use a snapshot version, you will need to add the [https://oss.sonatype.org/content/repositories/snapshots/](https://oss.sonatype.org/content/repositories/snapshots/) repository to your configuration.
 
@@ -140,7 +212,7 @@ Dependencies:
     <dependency>
         <groupId>org.elasticmq</groupId>
         <artifactId>elasticmq-rest-sqs_2.11</artifactId>
-        <version>0.8.7</version>
+        <version>0.13.2</version>
     </dependency>
 
 If you want to use a snapshot version, you will need to add the [https://oss.sonatype.org/content/repositories/snapshots/](https://oss.sonatype.org/content/repositories/snapshots/) repository to your configuration.
@@ -149,14 +221,14 @@ Replication, journaling, SQL backend
 ------------------------------------
 
 Until version 0.7.0, ElasticMQ included optional replication, journaling and an SQL message storage. These modules
-have not yet been reimplemented using the new Akka core.
+have been discontinued.
 
 Current versions
 ----------------
 
-*Stable*: 0.8.7
+*Stable*: 0.13.2, 0.8.12
 
-*Development*: 0.8.8-SNAPSHOT
+*Development*: 0.13.2-SNAPSHOT
 
 Logging
 -------
@@ -193,17 +265,111 @@ Note that both the client and the server were on the same machine.
 
 Test class: `org.elasticmq.performance.LocalPerformanceTest`.
 
+Building, running, and packaging
+--------------------------------
+
+To build and run with debug (this will listen for a remote debugger on port 5005):  
+```
+~/workspace/elasticmq $ sbt -jvm-debug 5005  
+> project elasticmq-server
+> run
+```
+
+To build a jar-with-dependencies:  
+```
+~/workspace/elasticmq $ sbt
+> project elasticmq-server
+> assembly
+```
+
 Technology
 ----------
 
 * Core: [Scala](http://scala-lang.org) and [Akka](http://akka.io/).
-* Rest server: [Spray](http://spray.io/), a high-performance,
+* Rest server: [Akka HTTP](http://doc.akka.io/docs/akka/2.4.7/scala/http/), a high-performance,
   asynchronous, REST/HTTP toolkit.
 * Testing the SQS interface: [Amazon Java SDK](http://aws.amazon.com/sdkforjava/);
   see the `rest-sqs-testing-amazon-java-sdk` module for the testsuite.
 
 Change log
 ----------
+
+#### Version 0.13.2 (7 Feb 2017)
+
+* bug fix
+
+#### Version 0.13.1 (26 Jan 2017)
+
+* add dummy add permission endpoint
+
+#### Version 0.13.0 (25 Jan 2017)
+
+* add dead letter queue support (thx @mkorolyov)
+
+#### Version 0.12.1 (13 Dec 2016)
+
+* remove TODOs which caused problems with .NET client
+
+#### Version 0.12.0 (7 Dec 2016)
+
+* support for dynamic port allocation
+* node address is generated from bind address if not specified
+
+#### Version 0.11.1 (30 Nov 2016)
+
+* bug fix
+
+#### Version 0.11.0 (23 Nov 2016)
+
+* updating dependencies, using Akka HTTP 10, builds for Scala 2.11 and 2.12
+
+#### Version 0.10.1 (31 Oct 2016)
+
+* fixing a bug with changing message visibility and long pooling
+
+#### Version 0.10.0 (22 Sep 2016)
+
+* updating Akka and other dependencies
+
+#### Version 0.9.3 (13 Apr 2016)
+
+* bug fix
+
+#### Version 0.9.2 (8 Apr 2016)
+
+* fixes handling of wait time seconds equal to 0 when receiving messages
+
+#### Version 0.9.1 (4 Apr 2016)
+
+* fixed bug to allow connecting using Perl client
+
+#### Version 0.9.0 (23 Mar 2016)
+
+* replace Spray with Akka
+* increase message body size limits
+* provide an option to create queues on startup
+* add a special node-address setting: `*`, which uses the incoming request url to create queue urls 
+
+#### Version 0.8.12 (30 Sep 2015)
+
+* checking queue length if limits are strict
+
+#### Version 0.8.11 (3 Sep 2015)
+
+* downgrading typesafe-config to keep Java6 compatibility
+
+#### Version 0.8.10 (3 Sep 2015)
+
+* numeric attributes support (thx @sf-git)
+
+#### Version 0.8.9 (10 Aug 2015)
+
+* binary attributes support (thx @brainoutsource)
+* dependency updates
+
+#### Version 0.8.8 (10 Apr 2015)
+
+* dependency updates, bug fixes
 
 #### Version 0.8.6, 0.8.7 (7 Feb 2015, 13 Feb 2015)
 

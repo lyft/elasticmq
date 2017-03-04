@@ -1,19 +1,15 @@
 import sbt._
 import Keys._
-import sbtassembly.Plugin._
-import AssemblyKeys._
+import sbtassembly.AssemblyKeys._
 
 object BuildSettings {
   val buildSettings = Defaults.coreDefaultSettings ++ Seq (
     organization  := "org.elasticmq",
-    version       := "0.8.8-SNAPSHOT",
-    scalaVersion  := "2.11.5",
+    version       := "0.13.2",
+    scalaVersion  := "2.11.8",
+    crossScalaVersions := Seq(scalaVersion.value, "2.12.1"),
 
-    addCompilerPlugin("org.scala-lang.plugins" % "scala-continuations-plugin_2.11.0" % "1.0.1"),
-    libraryDependencies += "org.scala-lang.plugins" %% "scala-continuations-library" % "1.0.2",
-    scalacOptions += "-P:continuations:enable",
-
-    libraryDependencies += "org.scala-lang.modules" %% "scala-xml" % "1.0.2",
+    libraryDependencies += "org.scala-lang.modules" %% "scala-xml" % "1.0.6",
 
     // Sonatype OSS deployment
     publishTo := {
@@ -42,34 +38,33 @@ object BuildSettings {
     scalacOptions ++= List("-unchecked", "-encoding", "UTF8"),
     homepage      := Some(new java.net.URL("http://www.elasticmq.org")),
     licenses      := ("Apache2", new java.net.URL("http://www.apache.org/licenses/LICENSE-2.0.txt")) :: Nil
-  ) ++ net.virtualvoid.sbt.graph.Plugin.graphSettings
+  )
 }
 
 object Dependencies {
-  val jodaTime      = "joda-time"                 % "joda-time"             % "2.5"
-  val jodaConvert   = "org.joda"                  % "joda-convert"          % "1.7"
-  val config        = "com.typesafe"              % "config"                % "1.2.1"
+  val jodaTime      = "joda-time"                 % "joda-time"             % "2.9.7"
+  val jodaConvert   = "org.joda"                  % "joda-convert"          % "1.8.1"
+  val config        = "com.typesafe"              % "config"                % "1.3.1"
 
-  val scalalogging  = "com.typesafe.scala-logging" %% "scala-logging"       % "3.1.0"
-  val logback       = "ch.qos.logback"            % "logback-classic"       % "1.1.2"
-  val jclOverSlf4j  = "org.slf4j"                 % "jcl-over-slf4j"        % "1.7.7" // needed form amazon java sdk
+  val scalalogging  = "com.typesafe.scala-logging" %% "scala-logging"       % "3.5.0"
+  val logback       = "ch.qos.logback"            % "logback-classic"       % "1.1.9"
+  val jclOverSlf4j  = "org.slf4j"                 % "jcl-over-slf4j"        % "1.7.22" // needed form amazon java sdk
 
-  val scalatest     = "org.scalatest"             %% "scalatest"            % "2.2.2"
-  val mockito       = "org.mockito"               % "mockito-core"          % "1.9.5"
-  val awaitility    = "com.jayway.awaitility"     % "awaitility-scala"      % "1.6.0"
+  val scalatest     = "org.scalatest"             %% "scalatest"            % "3.0.1"
+  val awaitility    = "com.jayway.awaitility"     % "awaitility-scala"      % "1.7.0"
 
-  val amazonJavaSdk = "com.amazonaws"             % "aws-java-sdk"          % "1.9.10" exclude ("commons-logging", "commons-logging")
+  val amazonJavaSdk = "com.amazonaws"             % "aws-java-sdk"          % "1.11.84" exclude ("commons-logging", "commons-logging")
 
-  val akka2Version  = "2.3.6"
-  val akka2Actor    = "com.typesafe.akka" %% "akka-actor"           % akka2Version
-  val akka2Slf4j    = "com.typesafe.akka" %% "akka-slf4j"           % akka2Version
-  val akka2Dataflow = "com.typesafe.akka" %% "akka-dataflow"        % akka2Version
-  val akka2Testkit  = "com.typesafe.akka" %% "akka-testkit"         % akka2Version % "test"
+  val akkaVersion      = "2.4.16"
+  val akkaHttpVersion  = "10.0.2"
+  val akka2Actor       = "com.typesafe.akka" %% "akka-actor"           % akkaVersion
+  val akka2Slf4j       = "com.typesafe.akka" %% "akka-slf4j"           % akkaVersion
+  val akka2Testkit     = "com.typesafe.akka" %% "akka-testkit"         % akkaVersion % "test"
+  val akka2Http        = "com.typesafe.akka" %% "akka-http"            % akkaHttpVersion
+  val sprayJson        = "io.spray" %% "spray-json"                    % "1.3.3"
+  val akka2HttpTestkit = "com.typesafe.akka" %% "akka-http-testkit" % akkaHttpVersion % "test"
 
-  val sprayVersion  = "1.3.2"
-  val sprayCan      = "io.spray"          %% "spray-can"            % sprayVersion
-  val sprayRouting  = "io.spray"          %% "spray-routing"        % sprayVersion
-  val sprayTestkit  = "io.spray"          %% "spray-testkit"        % sprayVersion % "test"
+  val scalaAsync = "org.scala-lang.modules" %% "scala-async" % "0.9.6"
 
   val common = Seq(scalalogging)
 }
@@ -88,7 +83,7 @@ object ElasticMQBuild extends Build {
     "elasticmq-common-test",
     file("common-test"),
     settings = buildSettings ++ Seq(
-      libraryDependencies ++= Seq(scalatest, mockito, awaitility, logback),
+      libraryDependencies ++= Seq(scalatest, awaitility, logback),
       publishArtifact := false)
   )
 
@@ -108,7 +103,7 @@ object ElasticMQBuild extends Build {
     "elasticmq-rest-sqs",
     file("rest/rest-sqs"),
     settings = buildSettings ++
-      Seq(libraryDependencies ++= Seq(akka2Actor, akka2Dataflow, akka2Slf4j, sprayCan, sprayRouting, sprayTestkit) ++ common)
+      Seq(libraryDependencies ++= Seq(akka2Actor, akka2Slf4j, akka2Http, sprayJson, akka2HttpTestkit, scalaAsync) ++ common)
   ) dependsOn(core, commonTest % "test")
 
   lazy val restSqsTestingAmazonJavaSdk: Project = Project(
@@ -122,7 +117,7 @@ object ElasticMQBuild extends Build {
   lazy val server: Project = Project(
     "elasticmq-server",
     file("server"),
-    settings = buildSettings ++ CustomTasks.generateVersionFileSettings ++ assemblySettings ++ Seq(
+    settings = buildSettings ++ CustomTasks.generateVersionFileSettings ++ Seq(
       libraryDependencies ++= Seq(logback, config),
       mainClass in assembly := Some("org.elasticmq.server.Main")
     )
