@@ -1,6 +1,5 @@
 package org.elasticmq.actor
 
-<<<<<<< HEAD
 import org.elasticmq.msg._
 import org.joda.time.{DateTime, Duration}
 import scala.reflect._
@@ -10,10 +9,8 @@ import akka.actor.{Props, ActorRef}
 import org.elasticmq.util.{Logging, NowProvider}
 import org.elasticmq.actor.queue.QueueActor
 import org.elasticmq.{MillisVisibilityTimeout, QueueData, QueueAlreadyExists}
-=======
 import akka.actor.{ActorRef, Props}
 import org.elasticmq.actor.queue.QueueActor
->>>>>>> release-0.13.2
 import org.elasticmq.actor.reply._
 import org.elasticmq.msg.{CreateQueue, DeleteQueue, _}
 import org.elasticmq.util.{Logging, NowProvider}
@@ -39,7 +36,7 @@ class QueueManagerActor(nowProvider: NowProvider) extends ReplyingActor with Log
 
         //TODO flag for unsafe mode
         logger.info(s"Creating queue $queueData")
-        Right(queues.get(queueData.name).getOrElse(context.actorOf(Props(new QueueActor(nowProvider, queueData)))))
+        Right(queues.get(queueData.name).getOrElse(createQueueActor(nowProvider, queueData)))
       } else if (!queueData.deadLettersQueue.forall(dlq => queues.contains(dlq.name))) {
         logger.debug(s"Cannot create queue, its dead letters queue doesnt exists: $queueData")
         Left(new QueueDoesNotExist(queueData.deadLettersQueue.get.name))
@@ -70,7 +67,7 @@ class QueueManagerActor(nowProvider: NowProvider) extends ReplyingActor with Log
           DateTime.now(),
           DateTime.now()
         )
-        val actor = context.actorOf(Props(new QueueActor(nowProvider, queueData)))
+        val actor = createQueueActor(nowProvider, queueData)
         queues(queueData.name) = actor
         result = queues.get(queueData.name)
       }
