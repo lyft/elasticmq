@@ -1,19 +1,21 @@
 package org.elasticmq.rest.sqs
 
 import Constants._
+import akka.http.scaladsl.server.Route
 import org.elasticmq.rest.sqs.directives.ElasticMQDirectives
 
-trait SendMessageBatchDirectives { this: ElasticMQDirectives with SendMessageDirectives with BatchRequestsModule =>
+trait SendMessageBatchDirectives {
+  this: ElasticMQDirectives with SendMessageDirectives with BatchRequestsModule =>
   val SendMessageBatchPrefix = "SendMessageBatchRequestEntry"
 
-  def sendMessageBatch(p: AnyParams) = {
+  def sendMessageBatch(p: AnyParams): Route = {
     p.action("SendMessageBatch") {
-      queueActorFromRequest(p) { queueActor =>
+      queueActorAndDataFromRequest(p) { (queueActor, queueData) =>
         verifyMessagesNotTooLong(p)
-
         val resultsFuture = batchRequest(SendMessageBatchPrefix, p) { (messageData, id) =>
-          doSendMessage(queueActor, messageData).map { case (message, digest, messageAttributeDigest) =>
-            <SendMessageBatchResultEntry>
+          doSendMessage(queueActor, messageData, queueData).map {
+            case (message, digest, messageAttributeDigest) =>
+              <SendMessageBatchResultEntry>
               <Id>{id}</Id>
               <MD5OfMessageAttributes>{messageAttributeDigest}</MD5OfMessageAttributes>
               <MD5OfMessageBody>{digest}</MD5OfMessageBody>
@@ -38,9 +40,9 @@ trait SendMessageBatchDirectives { this: ElasticMQDirectives with SendMessageDir
     }
   }
 
-  def verifyMessagesNotTooLong(parameters: Map[String, String]) {
+  def verifyMessagesNotTooLong(parameters: Map[String, String]): Unit = {
     val messageLengths = for {
-      parameterMap <-batchParametersMap(SendMessageBatchPrefix, parameters)
+      parameterMap <- batchParametersMap(SendMessageBatchPrefix, parameters)
     } yield {
       parameterMap(MessageBodyParameter).length
     }

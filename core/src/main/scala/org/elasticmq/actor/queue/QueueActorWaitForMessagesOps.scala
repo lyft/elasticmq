@@ -14,15 +14,16 @@ trait QueueActorWaitForMessagesOps extends ReplyingActor with QueueActorMessageO
 
   private var senderSequence = 0L
   private var scheduledTryReply: Option[Cancellable] = None
-  private val awaitingReply = new collection.mutable.HashMap[Long, AwaitingData]()
+  private val awaitingReply =
+    new collection.mutable.HashMap[Long, AwaitingData]()
 
   override def receive = super.receive orElse {
-    case ReplyIfTimeout(seq, replyWith) => {
-      awaitingReply.remove(seq).foreach { case AwaitingData(originalSender, _, _) =>
-        logger.debug(s"${queueData.name}: Awaiting messages: sequence $seq timed out. Replying with no messages.")
-        originalSender ! replyWith
+    case ReplyIfTimeout(seq, replyWith) =>
+      awaitingReply.remove(seq).foreach {
+        case AwaitingData(originalSender, _, _) =>
+          logger.debug(s"${queueData.name}: Awaiting messages: sequence $seq timed out. Replying with no messages.")
+          originalSender ! replyWith
       }
-    }
 
     case TryReply =>
       scheduledTryReply = None
@@ -37,9 +38,10 @@ trait QueueActorWaitForMessagesOps extends ReplyingActor with QueueActorMessageO
       scheduleTryReplyWhenAvailable()
       result
 
-    case rm@ReceiveMessages(visibilityTimeout, count, waitForMessagesOpt) =>
+    case rm @ ReceiveMessages(_, _, waitForMessagesOpt, _) =>
       val result = super.receiveAndReplyMessageMsg(msg)
-      val waitForMessages = waitForMessagesOpt.getOrElse(queueData.receiveMessageWait)
+      val waitForMessages =
+        waitForMessagesOpt.getOrElse(queueData.receiveMessageWait)
       if (result == ReplyWith(Nil) && waitForMessages.getMillis > 0) {
         val seq = assignSequenceFor(rm)
         logger.debug(s"${queueData.name}: Awaiting messages: start for sequence $seq.")
@@ -58,19 +60,21 @@ trait QueueActorWaitForMessagesOps extends ReplyingActor with QueueActorMessageO
   }
 
   @tailrec
-  private def tryReply() {
+  private def tryReply(): Unit = {
     awaitingReply.headOption match {
-      case Some((seq, AwaitingData(originalSender, ReceiveMessages(visibilityTimeout, count, _), waitStart))) => {
-        val received = super.receiveMessages(visibilityTimeout, count)
+      case Some(
+          (seq,
+           AwaitingData(originalSender, ReceiveMessages(visibilityTimeout, count, _, receiveRequestAttemptId), _))) =>
+        val received = super.receiveMessages(visibilityTimeout, count, receiveRequestAttemptId)
 
         if (received != Nil) {
           originalSender ! received
-          logger.debug(s"${queueData.name}: Awaiting messages: replying to sequence $seq with ${received.size} messages.")
+          logger.debug(
+            s"${queueData.name}: Awaiting messages: replying to sequence $seq with ${received.size} messages.")
           awaitingReply.remove(seq)
 
           tryReply()
         }
-      }
       case _ => // do nothing
     }
   }
@@ -82,43 +86,30 @@ trait QueueActorWaitForMessagesOps extends ReplyingActor with QueueActorMessageO
     seq
   }
 
-  private def scheduleTimeoutReply(seq: Long, waitForMessages: Duration) {
+  private def scheduleTimeoutReply(seq: Long, waitForMessages: Duration): Unit = {
     schedule(waitForMessages.getMillis, ReplyIfTimeout(seq, Nil))
   }
 
   private def scheduleTryReplyWhenAvailable(): Unit = {
-    @tailrec def dequeueUntilDeleted(): Unit = {
-      messageQueue.headOption match {
-        case Some(msg) if !messagesById.contains(msg.id) =>
-          messageQueue.dequeue()
-          dequeueUntilDeleted()
-        case _ => // stop
-      }
-    }
-
     scheduledTryReply.foreach(_.cancel())
     scheduledTryReply = None
 
-    if (awaitingReply.nonEmpty) {
-      dequeueUntilDeleted()
-
+    // The request needs a reply and there are messages on the queue, we should try to reply. The earliest we can reply
+    // is when the next message becomes available
+    if (awaitingReply.nonEmpty && messageQueue.byId.nonEmpty) {
       val deliveryTime = nowProvider.nowMillis
 
-      messageQueue.headOption match {
-        case Some(msg) if !msg.deliverable(deliveryTime) =>
-          scheduledTryReply = Some(schedule(msg.nextDelivery - deliveryTime + 1, TryReply))
-
-        case _ => // there are deliverable messages right now, no need to schedule a try-reply
+      messageQueue.byId.values.toList.sortBy(_.nextDelivery).headOption match {
+        case Some(msg) => scheduledTryReply = Some(schedule(msg.nextDelivery - deliveryTime + 1, TryReply))
+        case None      =>
       }
     }
   }
 
   private def schedule(afterMillis: Long, msg: Any): Cancellable = {
     import context.dispatcher
-    context.system.scheduler.scheduleOnce(
-      scd.Duration(afterMillis, scd.MILLISECONDS),
-      self,
-      msg)
+    context.system.scheduler
+      .scheduleOnce(scd.Duration(afterMillis, scd.MILLISECONDS), self, msg)
   }
 
   case class ReplyIfTimeout(seq: Long, replyWith: AnyRef)

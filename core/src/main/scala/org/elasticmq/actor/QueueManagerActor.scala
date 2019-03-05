@@ -1,14 +1,5 @@
 package org.elasticmq.actor
 
-import org.elasticmq.msg._
-import org.joda.time.{DateTime, Duration}
-import scala.reflect._
-import org.elasticmq.msg.DeleteQueue
-import org.elasticmq.msg.CreateQueue
-import akka.actor.{Props, ActorRef}
-import org.elasticmq.util.{Logging, NowProvider}
-import org.elasticmq.actor.queue.QueueActor
-import org.elasticmq.{MillisVisibilityTimeout, QueueData, QueueAlreadyExists}
 import akka.actor.{ActorRef, Props}
 import org.elasticmq.actor.queue.QueueActor
 import org.elasticmq.actor.reply._
@@ -22,10 +13,6 @@ class QueueManagerActor(nowProvider: NowProvider) extends ReplyingActor with Log
   type M[X] = QueueManagerMsg[X]
   val ev = classTag[M[Unit]]
 
-  val DefaultVisibilityTimeout = 30L
-  val DefaultDelay = 0L
-  val DefaultReceiveMessageWaitTimeSecondsAttribute = 0L
-
   private val queues = collection.mutable.HashMap[String, ActorRef]()
 
   def receiveAndReply[T](msg: QueueManagerMsg[T]): ReplyAction[T] = msg match {
@@ -37,9 +24,6 @@ class QueueManagerActor(nowProvider: NowProvider) extends ReplyingActor with Log
         //TODO flag for unsafe mode
         logger.info(s"Creating queue $queueData")
         Right(queues.get(queueData.name).getOrElse(createQueueActor(nowProvider, queueData)))
-      } else if (!queueData.deadLettersQueue.forall(dlq => queues.contains(dlq.name))) {
-        logger.debug(s"Cannot create queue, its dead letters queue doesnt exists: $queueData")
-        Left(new QueueDoesNotExist(queueData.deadLettersQueue.get.name))
       } else {
         logger.info(s"Creating queue $queueData")
         val actor = createQueueActor(nowProvider, queueData)
@@ -53,7 +37,7 @@ class QueueManagerActor(nowProvider: NowProvider) extends ReplyingActor with Log
       queues.remove(queueName).foreach(context.stop(_))
     }
 
-    case LookupQueue(queueName) => {
+    case LookupQueue(queueName) =>
       var result = queues.get(queueName)
       logger.debug(s"Looking up queue $queueName, found?: ${result.isDefined}")
 
@@ -73,7 +57,6 @@ class QueueManagerActor(nowProvider: NowProvider) extends ReplyingActor with Log
       }
 
       result
-    }
 
     case ListQueues() => queues.keySet.toSeq
   }

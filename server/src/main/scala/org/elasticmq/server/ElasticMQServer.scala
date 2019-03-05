@@ -4,13 +4,14 @@ import akka.actor.{ActorRef, ActorSystem, Props}
 import akka.util.Timeout
 import org.elasticmq.actor.QueueManagerActor
 import org.elasticmq.actor.reply._
-import org.elasticmq.msg.CreateQueue
 import org.elasticmq.rest.sqs.{CreateQueueDirectives, SQSRestServer, TheSQSRestServerBuilder}
+import org.elasticmq.server.config.{CreateQueue, ElasticMQServerConfig}
 import org.elasticmq.util.{Logging, NowProvider}
 import org.elasticmq.{DeadLettersQueueData, MillisVisibilityTimeout, QueueData}
 import org.joda.time.{DateTime, Duration}
 
 import scala.concurrent.Await
+import scala.concurrent.duration.Duration.Inf
 
 class ElasticMQServer(config: ElasticMQServerConfig) extends Logging {
   val actorSystem = ActorSystem("elasticmq")
@@ -21,11 +22,11 @@ class ElasticMQServer(config: ElasticMQServerConfig) extends Logging {
 
     createQueues(queueManagerActor)
 
-    () => {
-      restServerOpt.map(_.stopAndGetFuture())
-      actorSystem.shutdown()
-      actorSystem.awaitTermination()
-    }
+    () =>
+      {
+        restServerOpt.map(_.stopAndGetFuture())
+        Await.result(actorSystem.terminate(), Inf)
+      }
   }
 
   private def createBase(): ActorRef = {
@@ -38,13 +39,15 @@ class ElasticMQServer(config: ElasticMQServerConfig) extends Logging {
   private def optionallyStartRestSqs(queueManagerActor: ActorRef): Option[SQSRestServer] = {
     if (config.restSqs.enabled) {
 
-      val server = TheSQSRestServerBuilder(Some(actorSystem),
+      val server = TheSQSRestServerBuilder(
+        Some(actorSystem),
         Some(queueManagerActor),
         config.restSqs.bindHostname,
         config.restSqs.bindPort,
         config.nodeAddress,
         config.generateNodeAddress,
-        config.restSqs.sqsLimits).start()
+        config.restSqs.sqsLimits
+      ).start()
 
       server.waitUntilStarted()
 
@@ -60,14 +63,14 @@ class ElasticMQServer(config: ElasticMQServerConfig) extends Logging {
       Timeout(5.seconds)
     }
 
-    val futures = config.createQueues.map { cq =>
-      queueManagerActor ? CreateQueue(configToParams(cq, new DateTime))
+    config.createQueues.foreach { cq =>
+      // Synchronously create queues since order matters
+      val f = queueManagerActor ? org.elasticmq.msg.CreateQueue(configToParams(cq, new DateTime))
+      Await.result(f, timeout.duration)
     }
-
-    futures.foreach { f => Await.result(f, timeout.duration) }
   }
 
-  private def configToParams(cq: config.CreateQueue, now: DateTime): QueueData = {
+  private def configToParams(cq: CreateQueue, now: DateTime): QueueData = {
     QueueData(
       name = cq.name,
       defaultVisibilityTimeout = MillisVisibilityTimeout.fromSeconds(
@@ -77,7 +80,13 @@ class ElasticMQServer(config: ElasticMQServerConfig) extends Logging {
         cq.receiveMessageWaitSeconds.getOrElse(CreateQueueDirectives.DefaultReceiveMessageWait)),
       created = now,
       lastModified = now,
-      deadLettersQueue = cq.deadLettersQueue.map(dlq => DeadLettersQueueData(dlq.name, dlq.maxReceiveCount))
+      deadLettersQueue = cq.deadLettersQueue.map(dlq => DeadLettersQueueData(dlq.name, dlq.maxReceiveCount)),
+      isFifo = cq.isFifo,
+      hasContentBasedDeduplication = cq.hasContentBasedDeduplication,
+      copyMessagesTo = cq.copyMessagesTo,
+      moveMessagesTo = cq.moveMessagesTo,
+      tags = cq.tags
     )
   }
+
 }

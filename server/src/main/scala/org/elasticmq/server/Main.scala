@@ -1,11 +1,16 @@
 package org.elasticmq.server
 
-import org.elasticmq.util.Logging
-import io.Source
+import java.lang.Thread.UncaughtExceptionHandler
+
+import akka.actor.Terminated
 import com.typesafe.config.ConfigFactory
+import org.elasticmq.server.config.ElasticMQServerConfig
+import org.elasticmq.util.Logging
+
+import scala.io.Source
 
 object Main extends Logging {
-  def main(args: Array[String]) {
+  def main(args: Array[String]): Unit = {
     val start = System.currentTimeMillis()
     val version = readVersion()
     logger.info("Starting ElasticMQ server (%s) ...".format(version))
@@ -26,17 +31,16 @@ object Main extends Logging {
     Source.fromInputStream(stream).getLines().next()
   }
 
-  private def logUncaughtExceptions() {
-    Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
-      def uncaughtException(t: Thread, e: Throwable) {
+  private def logUncaughtExceptions(): Unit = {
+    Thread.setDefaultUncaughtExceptionHandler(new UncaughtExceptionHandler {
+      override def uncaughtException(t: Thread, e: Throwable): Unit =
         logger.error("Uncaught exception in thread: " + t.getName, e)
-      }
     })
   }
 
-  private def addShutdownHook(shutdown: () => Unit) {
+  private def addShutdownHook(shutdown: () => Terminated): Unit = {
     Runtime.getRuntime.addShutdownHook(new Thread() {
-      override def run() {
+      override def run(): Unit = {
         logger.info("ElasticMQ server stopping ...")
         shutdown()
         logger.info("=== ElasticMQ server stopped ===")

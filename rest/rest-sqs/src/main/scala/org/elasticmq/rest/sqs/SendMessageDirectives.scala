@@ -1,12 +1,17 @@
 package org.elasticmq.rest.sqs
 
+import java.security.MessageDigest
+
 import Constants._
 import MD5Util._
 import ParametersUtil._
 import org.elasticmq._
 import annotation.tailrec
+
 import akka.actor.ActorRef
 import scala.concurrent.Future
+
+import akka.http.scaladsl.server.Route
 import org.elasticmq.msg.SendMessage
 import org.elasticmq.actor.reply._
 import org.elasticmq.rest.sqs.directives.ElasticMQDirectives
@@ -14,13 +19,16 @@ import org.elasticmq.rest.sqs.directives.ElasticMQDirectives
 trait SendMessageDirectives { this: ElasticMQDirectives with SQSLimitsModule =>
   val MessageBodyParameter = "MessageBody"
   val DelaySecondsParameter = "DelaySeconds"
+  val MessageGroupIdParameter = "MessageGroupId"
+  val MessageDeduplicationIdParameter = "MessageDeduplicationId"
 
-  def sendMessage(p: AnyParams) = {
+  def sendMessage(p: AnyParams): Route = {
     p.action("SendMessage") {
-      queueActorFromRequest(p) { queueActor =>
-        doSendMessage(queueActor, p).map { case (message, digest, messageAttributeDigest) =>
-          respondWith {
-            <SendMessageResponse>
+      queueActorAndDataFromRequest(p) { (queueActor, queueData) =>
+        doSendMessage(queueActor, p, queueData).map {
+          case (message, digest, messageAttributeDigest) =>
+            respondWith {
+              <SendMessageResponse>
               <SendMessageResult>
                 <MD5OfMessageAttributes>{messageAttributeDigest}</MD5OfMessageAttributes>
                 <MD5OfMessageBody>{digest}</MD5OfMessageBody>
@@ -30,7 +38,7 @@ trait SendMessageDirectives { this: ElasticMQDirectives with SQSLimitsModule =>
                 <RequestId>{EmptyRequestId}</RequestId>
               </ResponseMetadata>
             </SendMessageResponse>
-          }
+            }
         }
       }
     }
@@ -38,16 +46,20 @@ trait SendMessageDirectives { this: ElasticMQDirectives with SQSLimitsModule =>
 
   def getMessageAttributes(parameters: Map[String, String]): Map[String, MessageAttribute] = {
     // Determine number of attributes -- there are likely ways to improve this
-    val numAttributes = parameters.map{ case (k,v) => {
-        if (k.startsWith("MessageAttribute.")) {
-          k.split("\\.")(1).toInt
-        } else {
-          0
-        }
+    val numAttributes = parameters
+      .map {
+        case (k, v) =>
+          if (k.startsWith("MessageAttribute.")) {
+            k.split("\\.")(1).toInt
+          } else {
+            0
+          }
       }
-    }.toList.union(List(0)).max // even if nothing, return 0
+      .toList
+      .union(List(0))
+      .max // even if nothing, return 0
 
-    (1 to numAttributes).map{ i =>
+    (1 to numAttributes).map { i =>
       val name = parameters("MessageAttribute." + i + ".Name")
       val dataType = parameters("MessageAttribute." + i + ".Value.DataType")
 
@@ -59,27 +71,26 @@ trait SendMessageDirectives { this: ElasticMQDirectives with SQSLimitsModule =>
       }
 
       val value = primaryDataType match {
-        case "String" => {
+        case "String" =>
           StringMessageAttribute(parameters("MessageAttribute." + i + ".Value.StringValue"), customDataType)
-        }
-        case "Number" => {
-          val strValue = parameters("MessageAttribute." + i + ".Value.StringValue")
+        case "Number" =>
+          val strValue =
+            parameters("MessageAttribute." + i + ".Value.StringValue")
           verifyMessageNumberAttribute(strValue)
           NumberMessageAttribute(strValue, customDataType)
-        }
-        case "Binary" => {
+        case "Binary" =>
           BinaryMessageAttribute.fromBase64(parameters("MessageAttribute." + i + ".Value.BinaryValue"), customDataType)
-        }
-        case _ => {
+        case _ =>
           throw new Exception("Currently only handles String, Number and Binary typed attributes")
-        }
       }
 
       (name, value)
     }.toMap
   }
 
-  def doSendMessage(queueActor: ActorRef, parameters: Map[String, String]): Future[(MessageData, String, String)] = {
+  def doSendMessage(queueActor: ActorRef,
+                    parameters: Map[String, String],
+                    queueData: QueueData): Future[(MessageData, String, String)] = {
     val body = parameters(MessageBodyParameter)
     val messageAttributes = getMessageAttributes(parameters)
 
@@ -89,8 +100,48 @@ trait SendMessageDirectives { this: ElasticMQDirectives with SQSLimitsModule =>
 
     verifyMessageNotTooLong(body.length)
 
-    val delaySecondsOption = parameters.parseOptionalLong(DelaySecondsParameter)
-    val messageToSend = createMessage(body, messageAttributes, delaySecondsOption)
+    val messageGroupId = parameters.get(MessageGroupIdParameter) match {
+      // MessageGroupId is only supported for FIFO queues
+      case Some(_) if !queueData.isFifo => throw SQSException.invalidParameterValue
+
+      // MessageGroupId is required for FIFO queues
+      case None if queueData.isFifo => throw SQSException.invalidParameterValue
+
+      // Ensure the given value is valid
+      case Some(id) if !isValidFifoPropertyValue(id) => throw SQSException.invalidParameterValue
+
+      // This must be a correct value (or this isn't a FIFO queue and no value is required)
+      case m => m
+    }
+
+    val messageDeduplicationId = parameters.get(MessageDeduplicationIdParameter) match {
+      // MessageDeduplicationId is only supported for FIFO queues
+      case Some(_) if !queueData.isFifo => throw SQSException.invalidParameterValue
+
+      // Ensure the given value is valid
+      case Some(id) if !isValidFifoPropertyValue(id) => throw SQSException.invalidParameterValue
+
+      // If a valid message group id is provided, use it, as it takes priority over the queue's content based deduping
+      case Some(id) => Some(id)
+
+      // MessageDeduplicationId is required for FIFO queues that don't have content based deduplication
+      case None if queueData.isFifo && !queueData.hasContentBasedDeduplication =>
+        throw SQSException.invalidParameterValue
+
+      // If no MessageDeduplicationId was provided and content based deduping is enabled for queue, generate one
+      case None if queueData.isFifo && queueData.hasContentBasedDeduplication => Some(sha256Hash(body))
+
+      // This must be a non-FIFO queue that doesn't require a dedup id
+      case None => None
+    }
+
+    val delaySecondsOption = parameters.parseOptionalLong(DelaySecondsParameter) match {
+      // FIFO queues don't support delays
+      case Some(_) if queueData.isFifo => throw SQSException.invalidParameterValue
+      case d                           => d
+    }
+    val messageToSend =
+      createMessage(body, messageAttributes, delaySecondsOption, messageGroupId, messageDeduplicationId)
     val digest = md5Digest(body)
     val messageAttributeDigest = md5AttributeDigest(messageAttributes)
 
@@ -99,7 +150,7 @@ trait SendMessageDirectives { this: ElasticMQDirectives with SQSLimitsModule =>
     } yield (message, digest, messageAttributeDigest)
   }
 
-  def verifyMessageNotTooLong(messageLength: Int) {
+  def verifyMessageNotTooLong(messageLength: Int): Unit = {
     ifStrictLimits(messageLength > 262144) {
       "MessageTooLong"
     }
@@ -128,12 +179,21 @@ trait SendMessageDirectives { this: ElasticMQDirectives with SQSLimitsModule =>
     findInvalidCharacter(0)
   }
 
-  private def createMessage(body: String, messageAttributes: Map[String, MessageAttribute], delaySecondsOption: Option[Long]) = {
+  private def createMessage(body: String,
+                            messageAttributes: Map[String, MessageAttribute],
+                            delaySecondsOption: Option[Long],
+                            groupId: Option[String],
+                            deduplicationId: Option[String]) = {
     val nextDelivery = delaySecondsOption match {
-      case None => ImmediateNextDelivery
-      case Some(delaySeconds) => AfterMillisNextDelivery(delaySeconds*1000)
+      case None               => ImmediateNextDelivery
+      case Some(delaySeconds) => AfterMillisNextDelivery(delaySeconds * 1000)
     }
 
-    NewMessageData(None, body, messageAttributes, nextDelivery)
+    NewMessageData(None, body, messageAttributes, nextDelivery, groupId, deduplicationId)
+  }
+
+  private def sha256Hash(text: String): String = {
+    String.format("%064x",
+                  new java.math.BigInteger(1, MessageDigest.getInstance("SHA-256").digest(text.getBytes("UTF-8"))))
   }
 }

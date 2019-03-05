@@ -27,13 +27,13 @@ import scala.util.control.NonFatal
 import scala.xml.{EntityRef, _}
 
 /**
- * By default:
- * <li>
- *  <ul>for `socketAddress`: when started, the server will bind to `localhost:9324`</ul>
- *  <ul>for `serverAddress`: returned queue addresses will use `http://localhost:9324` as the base address.</ul>
- *  <ul>for `sqsLimits`: relaxed
- * </li>
- */
+  * By default:
+  * <li>
+  * <ul>for `socketAddress`: when started, the server will bind to `localhost:9324`</ul>
+  * <ul>for `serverAddress`: returned queue addresses will use `http://localhost:9324` as the base address.</ul>
+  * <ul>for `sqsLimits`: relaxed
+  * </li>
+  */
 object SQSRestServerBuilder extends TheSQSRestServerBuilder(None, None, "", 9324, NodeAddress(), true, SQSLimits.Strict)
 
 case class TheSQSRestServerBuilder(providedActorSystem: Option[ActorSystem],
@@ -42,81 +42,77 @@ case class TheSQSRestServerBuilder(providedActorSystem: Option[ActorSystem],
                                    port: Int,
                                    serverAddress: NodeAddress,
                                    generateServerAddress: Boolean,
-                                   sqsLimits: SQSLimits.Value) extends Logging {
+                                   sqsLimits: SQSLimits.Value)
+    extends Logging {
 
   /**
-   * @param _actorSystem Optional actor system. If one is provided, it will be used to create ElasticMQ and Spray
-   *                     actors, but its lifecycle (shutdown) will be not managed by the server. If one is not
-   *                     provided, an actor system will be created, and its lifecycle will be bound to the server's
-   *                     lifecycle.
-   */
-  def withActorSystem(_actorSystem: ActorSystem) = this.copy(providedActorSystem = Some(_actorSystem))
+    * @param _actorSystem Optional actor system. If one is provided, it will be used to create ElasticMQ and Spray
+    *                     actors, but its lifecycle (shutdown) will be not managed by the server. If one is not
+    *                     provided, an actor system will be created, and its lifecycle will be bound to the server's
+    *                     lifecycle.
+    */
+  def withActorSystem(_actorSystem: ActorSystem) =
+    this.copy(providedActorSystem = Some(_actorSystem))
 
   /**
-   * @param _queueManagerActor Optional "main" ElasticMQ actor.
-   */
-  def withQueueManagerActor(_queueManagerActor: ActorRef) = this.copy(providedQueueManagerActor = Some(_queueManagerActor))
+    * @param _queueManagerActor Optional "main" ElasticMQ actor.
+    */
+  def withQueueManagerActor(_queueManagerActor: ActorRef) =
+    this.copy(providedQueueManagerActor = Some(_queueManagerActor))
 
   /**
-   * @param _interface Hostname to which the server will bind.
-   */
+    * @param _interface Hostname to which the server will bind.
+    */
   def withInterface(_interface: String) = this.copy(interface = _interface)
 
   /**
-   * @param _port Port to which the server will bind.
-   */
+    * @param _port Port to which the server will bind.
+    */
   def withPort(_port: Int) = this.copy(port = _port)
 
   /**
-   * Will assign port automatically (uses port 0). The port to which the socket binds will be logged on successful startup.
-   */
+    * Will assign port automatically (uses port 0). The port to which the socket binds will be logged on successful startup.
+    */
   def withDynamicPort() = withPort(0)
 
   /**
-   * @param _serverAddress Address which will be returned as the queue address. Requests to this address
-   *                       should be routed to this server.
-   */
-  def withServerAddress(_serverAddress: NodeAddress) = this.copy(serverAddress = _serverAddress, generateServerAddress = false)
+    * @param _serverAddress Address which will be returned as the queue address. Requests to this address
+    *                       should be routed to this server.
+    */
+  def withServerAddress(_serverAddress: NodeAddress) =
+    this.copy(serverAddress = _serverAddress, generateServerAddress = false)
 
   /**
-   * @param _sqsLimits Should "real" SQS limits be used (strict), or should they be relaxed where possible (regarding
-   *                   e.g. message size).
-   */
-  def withSQSLimits(_sqsLimits: SQSLimits.Value) = this.copy(sqsLimits = _sqsLimits)
+    * @param _sqsLimits Should "real" SQS limits be used (strict), or should they be relaxed where possible (regarding
+    *                   e.g. message size).
+    */
+  def withSQSLimits(_sqsLimits: SQSLimits.Value) =
+    this.copy(sqsLimits = _sqsLimits)
 
   def start(): SQSRestServer = {
     val (theActorSystem, stopActorSystem) = getOrCreateActorSystem
     val theQueueManagerActor = getOrCreateQueueManagerActor(theActorSystem)
-    val theServerAddress = if (generateServerAddress) NodeAddress(host = if (interface.isEmpty) "localhost" else interface, port = port) else serverAddress
+    val theServerAddress =
+      if (generateServerAddress)
+        NodeAddress(host = if (interface.isEmpty) "localhost" else interface, port = port)
+      else serverAddress
     val theLimits = sqsLimits
 
     implicit val implicitActorSystem = theActorSystem
     implicit val implicitMaterializer = ActorMaterializer()
 
-    val currentServerAddress = new AtomicReference[NodeAddress](theServerAddress)
+    val currentServerAddress =
+      new AtomicReference[NodeAddress](theServerAddress)
 
-    val env = new QueueManagerActorModule
-      with QueueURLModule
-      with SQSLimitsModule
-      with BatchRequestsModule
-      with ElasticMQDirectives
-      with CreateQueueDirectives
-      with DeleteQueueDirectives
-      with QueueAttributesDirectives
-      with ListQueuesDirectives
-      with SendMessageDirectives
-      with SendMessageBatchDirectives
-      with ReceiveMessageDirectives
-      with DeleteMessageDirectives
-      with DeleteMessageBatchDirectives
-      with ChangeMessageVisibilityDirectives
-      with ChangeMessageVisibilityBatchDirectives
-      with GetQueueUrlDirectives
-      with PurgeQueueDirectives
-      with AddPermissionDirectives
-      with AttributesModule {
+    val env = new QueueManagerActorModule with QueueURLModule with SQSLimitsModule with BatchRequestsModule
+    with ElasticMQDirectives with CreateQueueDirectives with DeleteQueueDirectives with QueueAttributesDirectives
+    with ListQueuesDirectives with SendMessageDirectives with SendMessageBatchDirectives with ReceiveMessageDirectives
+    with DeleteMessageDirectives with DeleteMessageBatchDirectives with ChangeMessageVisibilityDirectives
+    with ChangeMessageVisibilityBatchDirectives with GetQueueUrlDirectives with PurgeQueueDirectives
+    with AddPermissionDirectives with AttributesModule with TagQueueDirectives with TagsModule {
 
       def serverAddress = currentServerAddress.get()
+
       lazy val actorSystem = theActorSystem
       lazy val materializer = implicitMaterializer
       lazy val queueManagerActor = theQueueManagerActor
@@ -126,8 +122,8 @@ case class TheSQSRestServerBuilder(providedActorSystem: Option[ActorSystem],
 
     import env._
     def rawRoutes(p: AnyParams) =
-        // 1. Sending, receiving, deleting messages
-        sendMessage(p) ~
+      // 1. Sending, receiving, deleting messages
+      sendMessage(p) ~
         sendMessageBatch(p) ~
         receiveMessage(p) ~
         deleteMessage(p) ~
@@ -143,7 +139,10 @@ case class TheSQSRestServerBuilder(providedActorSystem: Option[ActorSystem],
         deleteQueue(p) ~
         getQueueAttributes(p) ~
         setQueueAttributes(p) ~
-        addPermission(p)
+        addPermission(p) ~
+        tagQueue(p) ~
+        untagQueue(p) ~
+        listQueueTags(p)
 
     val config = new ElasticMQConfig
 
@@ -164,39 +163,39 @@ case class TheSQSRestServerBuilder(providedActorSystem: Option[ActorSystem],
 
     val appStartFuture = Http().bindAndHandle(routes, interface, port)
 
-    appStartFuture.onSuccess {
-      case sb: Http.ServerBinding =>
-        if (generateServerAddress && port != sb.localAddress.getPort) {
-          currentServerAddress.set(theServerAddress.copy(port = sb.localAddress.getPort))
-        }
-
-        TheSQSRestServerBuilder.this.logger.info("Started SQS rest server, bind address %s:%d, visible server address %s"
-                .format(interface, sb.localAddress.getPort, if (env.serverAddress.isWildcard) "* (depends on incoming request path) " else env.serverAddress.fullAddress))
-    }
-
-    appStartFuture.onFailure {
-      case NonFatal(e) =>
-        TheSQSRestServerBuilder.this.logger.error("Cannot start SQS rest server, bind address %s:%d".format(interface, port), e)
-    }
-
-    SQSRestServer(appStartFuture, () => {
-      appStartFuture.flatMap { sb =>
-        stopActorSystem()
-        sb.unbind()
+    appStartFuture.foreach { sb: Http.ServerBinding =>
+      if (generateServerAddress && port != sb.localAddress.getPort) {
+        currentServerAddress.set(theServerAddress.copy(port = sb.localAddress.getPort))
       }
-    })
+
+      TheSQSRestServerBuilder.this.logger.info(
+        "Started SQS rest server, bind address %s:%d, visible server address %s"
+          .format(interface,
+                  sb.localAddress.getPort,
+                  if (env.serverAddress.isWildcard)
+                    "* (depends on incoming request path) "
+                  else env.serverAddress.fullAddress))
+    }
+
+    appStartFuture.failed.foreach {
+      case NonFatal(e) =>
+        TheSQSRestServerBuilder.this.logger
+          .error("Cannot start SQS rest server, bind address %s:%d".format(interface, port), e)
+    }
+
+    SQSRestServer(
+      appStartFuture,
+      () => appStartFuture.flatMap(_.unbind()).flatMap(_ => stopActorSystem())
+    )
   }
 
-  private def getOrCreateActorSystem = {
+  private def getOrCreateActorSystem: (ActorSystem, () => Future[Any]) = {
     providedActorSystem
-      .map((_, () => ()))
+      .map((_, () => Future.successful(())))
       .getOrElse {
-      val actorSystem = ActorSystem("elasticmq")
-      (actorSystem, () => {
-        actorSystem.shutdown()
-        actorSystem.awaitTermination()
-      })
-    }
+        val actorSystem = ActorSystem("elasticmq")
+        (actorSystem, actorSystem.terminate _)
+      }
   }
 
   private def getOrCreateQueueManagerActor(actorSystem: ActorSystem) = {
@@ -230,16 +229,19 @@ object Constants {
 }
 
 object ParametersUtil {
+
   implicit class ParametersParser(parameters: Map[String, String]) {
     def parseOptionalLong(name: String) = {
       val param = parameters.get(name)
       try {
         param.map(_.toLong)
       } catch {
-        case e: NumberFormatException => throw SQSException.invalidParameterValue
+        case e: NumberFormatException =>
+          throw SQSException.invalidParameterValue
       }
     }
   }
+
 }
 
 object MD5Util {
@@ -247,7 +249,15 @@ object MD5Util {
     val md5 = MessageDigest.getInstance("MD5")
     md5.reset()
     md5.update(s.getBytes("UTF-8"))
-    md5.digest().map(0xFF & _).map { "%02x".format(_) }.foldLeft(""){_ + _}
+    md5
+      .digest()
+      .map(0xFF & _)
+      .map {
+        "%02x".format(_)
+      }
+      .foldLeft("") {
+        _ + _
+      }
   }
 
   def md5AttributeDigest(attributes: Map[String, MessageAttribute]): String = {
@@ -264,33 +274,39 @@ object MD5Util {
 
     val byteStream = new ByteArrayOutputStream
 
-    TreeMap(attributes.toSeq: _*).foreach { case (k, v) => {
-      // TreeMap is for sorting, a requirement of algorithm
-      addEncodedString(byteStream, k)
-      addEncodedString(byteStream, v.getDataType())
+    TreeMap(attributes.toSeq: _*).foreach {
+      case (k, v) =>
+        // TreeMap is for sorting, a requirement of algorithm
+        addEncodedString(byteStream, k)
+        addEncodedString(byteStream, v.getDataType())
 
-      v match {
-        case s: StringMessageAttribute => {
-          byteStream.write(1)
-          addEncodedString(byteStream, s.stringValue)
+        v match {
+          case s: StringMessageAttribute =>
+            byteStream.write(1)
+            addEncodedString(byteStream, s.stringValue)
+          case n: NumberMessageAttribute =>
+            byteStream.write(1)
+            addEncodedString(byteStream, n.stringValue.toString)
+          case b: BinaryMessageAttribute =>
+            byteStream.write(2)
+            addEncodedByteArray(byteStream, b.binaryValue)
+          case _ =>
+            throw new IllegalArgumentException(s"Unsupported message attribute type: ${v.getClass.getName}")
         }
-        case n: NumberMessageAttribute => {
-          byteStream.write(1)
-          addEncodedString(byteStream, n.stringValue.toString)
-        }
-        case b: BinaryMessageAttribute => {
-          byteStream.write(2)
-          addEncodedByteArray(byteStream, b.binaryValue)
-        }
-        case _ => throw new IllegalArgumentException(s"Unsupported message attribute type: ${v.getClass.getName}")
-      }
-    }
     }
 
     val md5 = MessageDigest.getInstance("MD5")
     md5.reset()
     md5.update(byteStream.toByteArray)
-    md5.digest().map(0xFF & _).map { "%02x".format(_) }.foldLeft(""){_ + _}
+    md5
+      .digest()
+      .map(0xFF & _)
+      .map {
+        "%02x".format(_)
+      }
+      .foldLeft("") {
+        _ + _
+      }
   }
 }
 
@@ -328,7 +344,8 @@ trait QueueURLModule {
   def baseQueueURL: Directive1[String] = {
     val baseAddress = if (serverAddress.isWildcard) {
       extractRequest.map { req =>
-        val incomingAddress = req.uri.copy(rawQueryString = None, fragment = None).toString
+        val incomingAddress =
+          req.uri.copy(rawQueryString = None, fragment = None).toString
 
         val incomingAddressNoSlash = if (incomingAddress.endsWith("/")) {
           incomingAddress.substring(0, incomingAddress.length - 1)
@@ -345,7 +362,6 @@ trait QueueURLModule {
 
     baseAddress.map(_ + "/" + QueueUrlContext)
   }
-
 
   def queueURL(queueData: QueueData): Directive1[String] = {
     baseQueueURL.map(base => base + "/" + queueData.name)
@@ -364,21 +380,23 @@ trait SQSLimitsModule {
 
   def sqsLimits: SQSLimits.Value
 
-  def ifStrictLimits(condition: => Boolean)(exception: String) {
+  def ifStrictLimits(condition: => Boolean)(exception: String): Unit = {
     if (sqsLimits == SQSLimits.Strict && condition) {
       throw new SQSException(exception)
     }
   }
 
-  def verifyMessageNumberAttribute(strValue: String) {
-    ifStrictLimits(allCatch.opt(BigDecimal(strValue))
-      .filter(v => v >= NUMBER_ATTR_MIN_VALUE)
-      .filter(v => v <= NUMBER_ATTR_MAX_VALUE).isEmpty) {
+  def verifyMessageNumberAttribute(strValue: String): Unit = {
+    ifStrictLimits(
+      !allCatch
+        .opt(BigDecimal(strValue))
+        .filter(v => v >= NUMBER_ATTR_MIN_VALUE)
+        .exists(v => v <= NUMBER_ATTR_MAX_VALUE)) {
       s"Number attribute value $strValue should be in range (-10**128..10**126)"
     }
   }
 
-  def verifyMessageWaitTime(messageWaitTimeOpt: Option[Long]) {
+  def verifyMessageWaitTime(messageWaitTimeOpt: Option[Long]): Unit = {
     messageWaitTimeOpt.foreach { messageWaitTime =>
       if (messageWaitTime < 0) {
         throw SQSException.invalidParameterValue

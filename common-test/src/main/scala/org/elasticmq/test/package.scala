@@ -1,7 +1,8 @@
 package org.elasticmq
 
 import java.io.File
-import util.Random
+
+import scala.util.Random
 
 package object test {
   def timed(block: => Unit) = {
@@ -9,7 +10,7 @@ package object test {
     block
     val end = System.currentTimeMillis()
 
-    end-start
+    end - start
   }
 
   def createTempDir(): File = {
@@ -25,8 +26,8 @@ package object test {
     tempDir
   }
 
-  def deleteDirRecursively(dir: File) {
-    dir.listFiles().filter(_.isDirectory).foreach(deleteDirRecursively(_))
+  def deleteDirRecursively(dir: File): Unit = {
+    dir.listFiles().filter(_.isDirectory).foreach(deleteDirRecursively)
     dir.listFiles().filter(!_.isDirectory).foreach(_.delete())
     dir.delete()
   }

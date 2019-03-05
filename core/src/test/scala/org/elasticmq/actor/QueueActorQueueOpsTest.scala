@@ -14,13 +14,15 @@ class QueueActorQueueOpsTest extends ActorTest with QueueManagerForEachTest with
     val lastModified = new DateTime(1316168602L)
 
     for {
-      Right(queueActor) <- queueManagerActor ? CreateQueue(QueueData("q1", MillisVisibilityTimeout(1L), Duration.ZERO, Duration.ZERO, created, lastModified))
+      Right(queueActor) <- queueManagerActor ? CreateQueue(
+        QueueData("q1", MillisVisibilityTimeout(1L), Duration.ZERO, Duration.ZERO, created, lastModified))
 
       // When
       queueData <- queueActor ? GetQueueData()
     } yield {
       // Then
-      queueData should be (QueueData("q1", MillisVisibilityTimeout(1L), Duration.ZERO, Duration.ZERO, created, lastModified))
+      queueData should be(
+        QueueData("q1", MillisVisibilityTimeout(1L), Duration.ZERO, Duration.ZERO, created, lastModified))
     }
   }
 
@@ -37,7 +39,60 @@ class QueueActorQueueOpsTest extends ActorTest with QueueManagerForEachTest with
       queueData <- queueActor ? GetQueueData()
     } yield {
       // Then
-      queueData should be (q1Modified)
+      queueData should be(q1Modified)
+    }
+  }
+
+  waitTest("tagging a queue on creation") {
+    val tags = Map("tag1" -> "tagged1", "tag2" -> "tagged2")
+    val q1 = createQueueData("q1", MillisVisibilityTimeout(1L), tags = tags)
+
+    for {
+      Right(queueActor) <- queueManagerActor ? CreateQueue(q1)
+      queueData <- queueActor ? GetQueueData()
+    } yield {
+      queueData.tags should be(tags)
+    }
+  }
+
+  waitTest("tagging a queue after creation") {
+    val tags = Map("tag1" -> "tagged1", "tag2" -> "tagged2")
+    val q1 = createQueueData("q1", MillisVisibilityTimeout(1L))
+
+    for {
+      Right(queueActor) <- queueManagerActor ? CreateQueue(q1)
+      _ <- queueActor ? UpdateQueueTags(tags)
+      queueData <- queueActor ? GetQueueData()
+    } yield {
+      queueData.tags should be(tags)
+    }
+  }
+
+  waitTest("adding a tag to existing tags") {
+    val tags = Map("tag1" -> "tagged1", "tag2" -> "tagged2")
+    val newTag = Map("tag3" -> "tagged3")
+    val q1 = createQueueData("q1", MillisVisibilityTimeout(1L), tags = tags)
+
+    for {
+      Right(queueActor) <- queueManagerActor ? CreateQueue(q1)
+      _ <- queueActor ? UpdateQueueTags(newTag)
+      queueData <- queueActor ? GetQueueData()
+    } yield {
+      queueData.tags should be(tags ++ newTag)
+    }
+  }
+
+  waitTest("updating an existing tag") {
+    val tags = Map("tag1" -> "tagged1", "tag2" -> "tagged2")
+    val newTag = Map("tag1" -> "tagged3")
+    val q1 = createQueueData("q1", MillisVisibilityTimeout(1L), tags = tags)
+
+    for {
+      Right(queueActor) <- queueManagerActor ? CreateQueue(q1)
+      _ <- queueActor ? UpdateQueueTags(newTag)
+      queueData <- queueActor ? GetQueueData()
+    } yield {
+      queueData.tags should be(tags ++ newTag)
     }
   }
 
@@ -52,7 +107,7 @@ class QueueActorQueueOpsTest extends ActorTest with QueueManagerForEachTest with
       stats <- queueActor ? GetQueueStatistics(123L)
     } yield {
       // Then
-      stats should be (QueueStatistics(0L, 0L, 0L))
+      stats should be(QueueStatistics(0L, 0L, 0L))
     }
   }
 
@@ -79,13 +134,13 @@ class QueueActorQueueOpsTest extends ActorTest with QueueManagerForEachTest with
 
       // Invisible messages - received
       _ <- queueActor ? SendMessage(m1)
-      _ <- queueActor ? ReceiveMessages(DefaultVisibilityTimeout, 1, None)
+      _ <- queueActor ? ReceiveMessages(DefaultVisibilityTimeout, 1, None, None)
       _ <- queueActor ? SendMessage(m2)
-      _ <- queueActor ? ReceiveMessages(DefaultVisibilityTimeout, 1, None)
+      _ <- queueActor ? ReceiveMessages(DefaultVisibilityTimeout, 1, None, None)
       _ <- queueActor ? SendMessage(m3)
-      _ <- queueActor ? ReceiveMessages(DefaultVisibilityTimeout, 1, None)
+      _ <- queueActor ? ReceiveMessages(DefaultVisibilityTimeout, 1, None, None)
       _ <- queueActor ? SendMessage(m4)
-      _ <- queueActor ? ReceiveMessages(DefaultVisibilityTimeout, 1, None)
+      _ <- queueActor ? ReceiveMessages(DefaultVisibilityTimeout, 1, None, None)
 
       // Visible messages
       _ <- queueActor ? SendMessage(m5)
@@ -100,7 +155,7 @@ class QueueActorQueueOpsTest extends ActorTest with QueueManagerForEachTest with
       stats <- queueActor ? GetQueueStatistics(123L)
     } yield {
       // Then
-      stats should be (QueueStatistics(2L, 4L, 3L))
+      stats should be(QueueStatistics(2L, 4L, 3L))
     }
   }
 
@@ -118,7 +173,7 @@ class QueueActorQueueOpsTest extends ActorTest with QueueManagerForEachTest with
 
       // Invisible messages - received
       _ <- queueActor ? SendMessage(m1)
-      _ <- queueActor ? ReceiveMessages(DefaultVisibilityTimeout, 1, None)
+      _ <- queueActor ? ReceiveMessages(DefaultVisibilityTimeout, 1, None, None)
       _ <- queueActor ? SendMessage(m2)
 
       // When
@@ -126,7 +181,7 @@ class QueueActorQueueOpsTest extends ActorTest with QueueManagerForEachTest with
       stats <- queueActor ? GetQueueStatistics(123L)
     } yield {
       // Then
-      stats should be (QueueStatistics(0L, 0L, 0L))
+      stats should be(QueueStatistics(0L, 0L, 0L))
     }
   }
 }
